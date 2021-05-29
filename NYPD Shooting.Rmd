@@ -1,0 +1,286 @@
+---
+title: "NYPD Shooting Incident-Week3 Project"
+author: "CU Boulder MS-DS Student :)"
+date: "2021/5/8"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Project Goal
+The goal of this project is to explore the relationships between shooting incidents in New York, and variables such time of the day, day of the week, race, age, and gender of the victim. This report will walk through the data import, cleaning, visualization processes. It will also provide a series of analysis based on univariate and bivariate visualizations. Finally, this report will discuss overall findings and possible biases.
+
+
+### Data Set Background
+The first and most important step in data analysis, is to understand where the data comes from and what the data is about.
+
+The NPYD Shooting Incident Data (Historic) can be found on NYC OpenData. The data consist of a breakdown of **every shooting incident** that occurred in NYC going back to **2006 through the end of the previous calendar year**. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and **includes information about the event, the location and time of occurrence**. In addition, information related to **suspect and victim demographics is also included**. This data can be used by the public to explore the nature of shooting/criminal activity.
+
+**Since the data is originally extracted manually, me might expect to see some data-entry inconsistencies or errors.**
+
+
+### Section I: Loading libraries and importing the data
+
+#### Loading necessary packages
+We will load R's tidyverse library, which contains useful packages such as ggplot2 and tidyr. We will also load lubridate for date-time.
+```{r package loading, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(lubridate)
+library(anytime)
+library(randomForest)
+```
+
+#### Importing the data set
+We will import the data set directly from NYC OpenData website as follows:
+
+```{r data import, results = 'hide', message = FALSE}
+data_url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+raw_data <- read_csv(data_url_in)
+```
+
+### Section II: Initial Data Exploration
+
+**The goal of this section, is to explore the basic structure of the data set:**
+
+1. To understand the shape and dimensions of the data
+2. what variables does it contain? 
+3. What are the variable types, and are they consistent with our expectations? 
+4. Are there any missing values? 
+5. Clean and prepare the data set by fixing up data types, and dealing with missing values.
+
+#### 1. Understanding the structure, and dimensions
+```{r data structure, message = FALSE}
+str(raw_data)
+```
+We can see that there are 23568 rows x 19 columns (variables)
+
+To have a closer look at the data, we can view() or head(). For now let's have a look at the first 6 rows. 
+```{r head}
+head(raw_data)
+```
+
+Let's also take a look at a random sample of 6 rows, this will sometimes help us get a better understanding of the data.
+```{r sample rows}
+sample_n(raw_data, 6)
+```
+
+We can also take a look at the summary statistics of the data, but note there are no summaries for character variables.
+```{r initial summary stats}
+summary(raw_data)
+```
+
+#### 2. Exploring the variables
+The most important step is to understand what the variables, and what they actually represent. It is often best to first look up the official description. For our data set, the official description can be found here: https://data.cityofnewyork.us/Public-Safety/NYPD-Shooting-Incident-Data-Historic-/833y-fsy8
+
+Column Name|Description
+:----------|:----------|
+INCIDENT_KEY| Randomly generated persistent ID for each arrest
+OCCUR_DATE|Exact date of the shooting incident
+OCCUR_TIME|Exact time of the shooting incident
+BORO|Borough where the shooting incident occurred
+PRECINCT|Precinct where the shooting incident occurred
+JURISDICTION_CODE|Jurisdiction where the shooting incident occurred. Jurisdiction codes 0(Patrol), 1(Transit) and 2(Housing) represent NYPD whilst codes 3 and more represent non NYPD jurisdictions
+LOCATION_DESC|Location of the shooting incident
+STATISTICAL_MURDER_FLAG|Shooting resulted in the victim’s death which would be counted as a murder
+PERP_AGE_GROUP|Perpetrator’s age within a category
+PERP_SEX|Perpetrator’s sex description
+PERP_RACE|Perpetrator’s race description
+VIC_AGE_GROUP|Victim’s age within a category
+VIC_SEX|Victim’s sex description
+VIC_RACE|Victim’s race description
+X_COORD_CD|Midblock X-coordinate for New York State Plane Coordinate System, Long Island Zone, NAD 83, units feet (FIPS 3104)
+Y_COORD_CD|Midblock Y-coordinate for New York State Plane Coordinate System, Long Island Zone, NAD 83, units feet (FIPS 3104)
+Latitude|Latitude coordinate for Global Coordinate System, WGS 1984, decimal degrees (EPSG 4326)
+Longitude|Longitude coordinate for Global Coordinate System, WGS 1984, decimal degrees (EPSG 4326)
+Lon_Lat|Longitude and Latitude Coordinates for mapping
+
+Based on these definitions, we can drop the variables and columns that we are not interested in. For this particular project, I am not particularly interested in the INCIDENT_KEY, PRECINCT, JURISDICTION_CODE, LOCATION_DESC, X_COORD_CD, Y_COORD_CD, Latitude, Longitude and Lon_Lat.
+```{r subsetting data for analysis}
+raw_data <- raw_data %>% select(OCCUR_DATE, OCCUR_TIME, BORO, STATISTICAL_MURDER_FLAG, PERP_AGE_GROUP, PERP_SEX, PERP_RACE, VIC_AGE_GROUP, VIC_SEX, VIC_RACE)
+```
+
+Let's have a look at this subset of data
+```{r}
+str(raw_data)
+```
+#### 3. Exploring missing values
+```{r Missing}
+sapply(raw_data, function(x) sum(is.na(x)))
+```
+It seems we have missing values in PERP_AGE_GROUP, PERP_SEX and PERP_RACE columns. Normally we would try to impute the missing values as well as possible. For example we could try to fill up the missing values with the mode. However in this case, since the missing values are all related to PERP that is the perpetrator, and the missing values counts are very very similar, there could be common reason for why they are missing, and so instead of imputing them statistically, we should be going back to the original source and ask the data provider what happened here.This is beyond the scope of this project. Here, we will just drop all columns with missing values.
+
+```{r}
+new_data <- subset(raw_data, select = -c(PERP_AGE_GROUP, PERP_SEX, PERP_RACE))
+```
+
+#### 4. Exploring data types
+As we can see from the previous sections, there are several variables whose types (classes) seem rather suspicious.
+
+For example, OCCUR_DATE should be date-time, while StATISTICAL_MURDER_FLAG can be converted to chr type for better interpretation.
+
+Let's fix up these data types
+```{r fixing data type}
+new_data$OCCUR_DATE <- anytime(new_data$OCCUR_DATE)
+
+new_data$STATISTICAL_MURDER_FLAG <- as.character(new_data$STATISTICAL_MURDER_FLAG)
+
+new_data <- new_data %>% mutate_if(is.character,as.factor)
+```
+
+We can also combine OCCUR_DATE and OCCUR_TIME into OCCUR_DATETIME, and drop the original two columns
+```{r combine date and time}
+new_data$OCCUR_DATETIME <- with(new_data, anytime(paste(OCCUR_DATE, OCCUR_TIME)))
+
+new_data <- subset(new_data, select = -c(OCCUR_DATE, OCCUR_TIME))
+
+str(new_data)
+```
+
+### Section III: EDA
+#### 1. Univariate Analysis
+
+**Where do shootings tend to happen?**
+```{r}
+table(new_data$BORO)
+
+new_data %>% ggplot(aes(BORO)) + geom_bar() + theme_classic() + ggtitle("Shooting Incident Count by Borough") + ylab("Shooting Incident Count") 
+```
+
+We can see that Brooklyn has the highest count of shootings, but based on this alone, we cannot conclude Brooklyn is more dangerous than State Island. What if Brooklyn has a much higher population than State Island?
+
+**Are more men or women victims of shooting incidents?**
+```{r}
+table(new_data$VIC_SEX)
+
+new_data %>% ggplot(aes(VIC_SEX)) + geom_bar() + theme_classic() + ggtitle("Shooting Incident Count by Sex") + ylab("Shooting Incident Count")
+```
+
+We can see that men are much more likely to be involved in shooting incidents as victims than women.
+
+**How are victim age groups related to shooting incidents?**
+```{r}
+table(new_data$VIC_AGE_GROUP)
+
+new_data %>% ggplot(aes(VIC_AGE_GROUP)) + geom_bar() + theme_classic() + ggtitle("Shooting Incident Count by Age Group") + ylab("Shooting Incident Count")
+```
+
+We can see that a disproportionately large amount of shooting victims are between 18-24, and 25-44 years old. This observation is consistent with common sense, as generally speaking younger people tend to be more reckless and are more likely to be involved in conflicts with other people.
+
+**How are victim races related to shooting incidents?**
+```{r}
+table(new_data$VIC_RACE)
+
+new_data %>% ggplot(aes(VIC_RACE)) + geom_bar() + theme_classic() + ggtitle("Shooting Incident Count by Race") + ylab("Shooting Incident Count")+ theme(axis.text.x = element_text(angle = 90))
+```
+We can observe that a disproportionately large count of shooting incident victims are Black, followed by White Hispanic and Black Hispanic.
+
+
+**How is the day of the week related to shooting incidents?**
+```{r}
+Sys.setlocale("LC_TIME", "English")
+
+new_data %>% ggplot(aes(wday(OCCUR_DATETIME, label = TRUE, week_start = 1))) + geom_bar() + theme_classic() + ggtitle("Shooting Incident Count by Day of the Week") + ylab("Shooting Incident Count") + xlab("Days of the week")
+```
+
+As we might expect, we tend to observe more shootings on the weekend. This might be the result of higher alcohol consumption on weekends.
+
+**How is the time of the day related to shooting incidents?**
+```{r}
+Sys.setlocale("LC_TIME", "English")
+
+new_data %>% ggplot(aes(hour(OCCUR_DATETIME))) + geom_bar() + theme_classic() + ggtitle("Shooting Incident Count by Time of the Day") + ylab("Shooting Incident Count") + xlab("Time of the Day")
+```
+
+Again, shootings tend to happen during late-night to early morning (peaking around 11pm-1am), this is also when alcohol consumption tends to be high. This period of time also coincides with the age groups we have identified earlier; more 18-44 year olds tend to be on street than younger children or older people.
+
+**Are there any trends in shooting incidents throughout the years?**
+```{r}
+new_data <- new_data %>% mutate(year_month = format_ISO8601(OCCUR_DATETIME, precision = "ym"))
+
+monthly_shooting <- new_data %>% group_by(year_month) %>% summarize(monthly_incidents = n())
+
+monthly_shooting %>% ggplot(aes(x = year_month, y = monthly_incidents, group =1, label = year_month)) + geom_line() + geom_text(size = 2, color = 'blue') + theme_classic() +  theme(axis.text.x=element_blank()) + xlab("Time (in month)") + ylab("Total Monthly Shooting Incidents") + ggtitle("Monthly Shooting Incidents over Time")
+
+```
+
+#### 2. Multivariate Analysis
+**Age group and time of the day**
+```{r}
+new_data %>% ggplot(aes(hour(OCCUR_DATETIME), fill = factor(VIC_AGE_GROUP))) + geom_bar(position = 'fill') + theme_classic() + ggtitle("Shooting Incident: Shooting Proportion vs Time of the Day") + ylab("Shooting Incident Proportion") + xlab("Time of the Day")
+```
+
+We can see quite clearly from the bar graph above, 18-24, 25-44 dominate the proportion of victims throughout all hours the day, but they make up an even greater proportion at late nights and early morning. These observations are consistent with our previous expectations.
+
+**Borough and day of the week**
+```{r}
+new_data %>% ggplot(aes(wday(OCCUR_DATETIME, label = TRUE, week_start = 1), fill = factor(BORO))) + geom_bar(position = 'fill') + theme_classic() + ggtitle("Shooting Incident Proportion by Day of the Week") + ylab("Shooting Incident Proportion") + xlab("Day of the Week")
+```
+We see that the proportion of shootings in Bronx tends to rise over the week, while for Brooklyn we tend to see higher proportions of shootings on Mondays and Tuesdays.
+
+### Section IV: Modelling
+In this section, we shall try to predict the "STATISTICAL_MURDER_FLAG", TRUE refers to shooting resulted in the victim’s death which would be counted as a murder, and FALSE means that the incident did not count as a murder.
+
+**How imbalanced is the "STATISTICAL_MURDER_FLAG" variable?**
+```{r}
+prop.table(table(new_data$STATISTICAL_MURDER_FLAG))
+```
+We have about a 1:4 ratio between TRUE and FALSE, which is slightly imbalanced. For this project, we will not use oversampling or undersampling methods to deal with class imbalance.
+
+**Splitting the data into train and validation sets**
+```{r train val split}
+set.seed(42)
+
+# Splitting the data into 75% training, and 25% validation
+indexes <- sample(1:nrow(new_data), size = 0.75*nrow(new_data))
+
+training <- new_data[indexes,]
+validation <- new_data[-indexes,]
+```
+
+**Building a random forest model**
+Random forest is a powerful machine learning technique. It can be used for classification or regression problems. In this project, we will use default settings for the random forest model.
+```{r}
+
+rf_clf = randomForest(STATISTICAL_MURDER_FLAG ~ ., data=training)
+
+rf_clf
+```
+Voila! We achieved an error rate of only 19%, not bad! 
+
+Wait a minute...if we look at the results more closely, our model is in fact severely overfitting the data, and basically it is predicting FALSE for all observations, thus resulting in a very high number of false negatives! This is a classic problem with imbalanced classes, and requires further data wrangling to fix the issues.
+
+
+### Section V: Conclusion and further questions to explore
+As we have discovered, shootings tend to happen most frequently:
+
+* On weekends
+* From 11pm - 1am(next day)
+* In Brooklyn and Bronx
+* To the Black ethnicity
+* To people aged between 18-44
+* To men
+
+#### 1. Further Question to Explore
+I have been using alcohol consumption a key factor for explaining the pattern above. However, this is only a hypothesis and since this data set does not contain relevant alcohol consumption information, we have to look into other data sets to find evidence for verifying our hypothesis.
+
+Furthermore, we will need to use more sophisticated data wrangling methods to deal with the imbalanced class problem, in order to generate a more meaningful model. After re-modeling, we will be able to make use of our validation data set and determine how well our predictions would generalize to new data.
+
+#### 2. Exploring Potential Biases
+Sometimes it is more important to think about what the data doesn't contain, rather than what it contains. By what the data doesn't contain, I am referring to the stories and conclusions that are founded not on the data itself, but arise from our own subjective interpretations and biases. 
+
+Personally, I am against alcoholism and may hold a stereotype about 'drinking' and 'heavy partying'. This personal tendency can lead to cognitive biases such as heuristics and confirmation bias, which means that I could being interpreting any patterns in the data as confirming evidence for my own views, regardless of what the data is actually showing.
+
+There may be confounding factors other than alcohol consumption that could explain the pattern we see. For example, social economic status may play an important role. 'Party animals' are not the only people on the streets at 12am in the morning. The homeless may be on the streets at night. People who work night shifts such as taxi drivers, and sales assistants at convenience stores are also up at night, and these people tend to be younger (around 18-44), as when people get older, working night shifts becomes much tougher.
+
+In order to mitigate biases, it is important to be inclusive and embrace a diverse range of perspectives. For example, peer review is a good place to start, as it will introduce new perspectives. Discussions with domain experts will also be extremely helpful, as they can often immediately identify common pitfalls and flaws in logic in our analysis. Another accessible and useful method is to simply Google similar studies and research papers to see what biases people have raised in the past, and use those as a checklist for our own analysis.
+
+
+```{r}
+sI <- sessionInfo()
+print(sI, locale = FALSE)
+```
+
